@@ -1,0 +1,59 @@
+# Publish the successful, existing IPA/device-kit as normal GitHub Release assets.
+# No rebuild, Apple credentials, or Blizzard client files are involved.
+name: Publish Full Enhanced Upgrade Downloads
+
+on:
+  push:
+    branches: [feature/official-touch]
+    paths:
+      - .github/workflows/publish-enhanced-upgrade.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified successful iPhone build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN=45272938973
+          REPO="$GITHUB_REPOSITORY"
+          status="$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq .conclusion)"
+          test "$status" = success
+          mkdir -p dist
+          gh run download "$RUN" --repo "$REPO" --name slashplayed-full-enhanced-upgrade-candidate --dir dist
+          test -s dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
+          test -s dist/slashplayed-device-kit.zip
+          test -s dist/SHA256SUMS
+          sha256sum -c dist/SHA256SUMS
+
+      - name: Publish simple no-login download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          TAG="enhanced-upgrade-20261124"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa dist/slashplayed-device-kit.zip dist/SHA256SUMS --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" \
+              dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa \
+              dist/slashplayed-device-kit.zip \
+              dist/SHA256SUMS \
+              --repo "$REPO" \
+              --target 5eb253b99bfc49064a2be7fcb739f6c0d6250a26 \
+              --title "Slashplayed Full Enhanced 1.6.2 — upgrade candidate" \
+              --prerelease \
+              --notes "Successful build #45272938973. Native Enhanced touch controls and settings on official loader. Generic IPA Bundle ID slashplayed; SideStore in-place replacement is not verified and requires matching the installed app and helper IDs and developer team. Do not delete the working app. Windows Companion device kit is included."
+          fi
+          gh release view "$TAG" --repo "$REPO" --json url,assets --jq '{url:.url,assets:[.assets[].name]}'
