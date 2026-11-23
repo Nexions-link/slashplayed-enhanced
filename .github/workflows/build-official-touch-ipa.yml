@@ -54,13 +54,17 @@ jobs:
           git reset --hard official/main
           # Restore only the native touch input modules and WoW touch action bars.
           git checkout "$ENHANCED_SHA" -- \
-            shims/appkit/spevent.m \
+            shims/appkit/spevent-touch.m \
             shims/appkit/spjoystick.m \
             shims/appkit/spthumb.m \
             shims/appkit/spkeys.m \
             addon/SPTouchBars/SPTouchBars.lua \
             addon/SPTouchBars/SPTouchBars.toc \
             addon/SPTouchBars/SPTouchBars.tga
+          # Preserve modern official keyboard and text input, overlay only native touch controls.
+          cp shims/appkit/spevent-touch.m shims/appkit/spevent.m
+          grep -q sp_keyboard_forget shims/appkit/spevent.m
+          grep -q sp_touch_key shims/appkit/spevent.m
           python3 - <<'PY'
           from pathlib import Path
           def replace_once(path, before, after):
