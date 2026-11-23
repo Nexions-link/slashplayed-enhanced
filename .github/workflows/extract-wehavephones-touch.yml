@@ -83,7 +83,7 @@ jobs:
       - name: Publish standalone addon ZIP
         shell: bash
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="wehavephones-touch-v0.0.13-extracted"
