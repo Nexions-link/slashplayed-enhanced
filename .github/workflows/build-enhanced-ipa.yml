@@ -1,0 +1,125 @@
+# Experimental, unsigned SideStore candidate. No Apple ID, profiles, Blizzard files or secrets.
+# NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
+name: Build Enhanced iPhone IPA (experimental)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [enhanced]
+    paths:
+      - .github/workflows/build-enhanced-ipa.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: enhanced-ipa-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      XCODE_APP: /Applications/Xcode_27.1.app
+      XCODEGEN_VERSION: 2.46.0
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      RUSTUP_VERSION: 1.29.2
+      RUSTUP_SHA256: f7c7e11eb2e07f006e532a8aaac77b32f4527d305ac386c0c633ca6133d35ca9
+      IDEVICE_CACHE_PATHS: |
+        work/idevice/BUILD.txt
+        work/idevice/include
+        work/idevice/ios
+        work/idevice/xros
+        work/idevice/macos
+      ZSIGN_CACHE_PATHS: |
+        work/zsign/BUILD.txt
+        work/zsign/licenses
+        work/zsign/src/zsign/src
+        work/zsign/ios
+        work/zsign/xros
+        work/zsign/macos
+      BUNDLE_ID: com.nexions.slashplayed.enhanced
+
+    steps:
+      - name: Checkout Enhanced source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify checkout and select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f addon/SPTouchBars/SPTouchBars.lua
+          test -f scripts/release/device-kit.sh
+          test -f .github/actions/companion-deps/action.yml || test -f .github/actions/companion-deps/action.yaml
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+      - name: Prepare pinned dependencies
+        uses: ./.github/actions/companion-deps
+      - name: Fetch font and license
+        shell: bash
+        run: scripts/fetch-font.sh
+      - name: Build unsigned Enhanced device kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh apps/companion/bundle-resources.sh --build "$RUNNER_TEMP/resources"
+          scripts/release/device-kit.sh "$RUNNER_TEMP/resources" "$RUNNER_TEMP/slashplayed-device-kit.zip"
+      - name: Package experimental IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging dist Payload
+          unzip -q "$RUNNER_TEMP/slashplayed-device-kit.zip" -d staging
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          bid = os.environ["BUNDLE_ID"]
+          app = Path("staging/ios/Slashplayed.app")
+          helper = app / "PlugIns/SPJitHelper.appex"
+          for p, ident in ((app/"Info.plist", bid), (helper/"Info.plist", bid+".helper")):
+              with p.open("rb") as f: data = plistlib.load(f)
+              assert data["CFBundleIdentifier"] == "@BUNDLE_ID@", (p, data["CFBundleIdentifier"])
+              data["CFBundleIdentifier"] = ident
+              with p.open("wb") as f: plistlib.dump(data, f)
+          for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
+              assert p.is_file(), f"missing runtime/control component: {p}"
+          with open("dist/app-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True,
+                             "com.apple.developer.kernel.increased-memory-limit": True,
+                             "com.apple.developer.kernel.extended-virtual-addressing": True}, f)
+          with open("dist/helper-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True}, f)
+          print("Bundle identifier:", bid, "; touch addon present")
+          PY
+          APP=staging/ios/Slashplayed.app
+          for lib in "$APP"/Frameworks/*.dylib; do
+            codesign --force --sign - "$lib"
+          done
+          codesign --force --sign - --entitlements dist/helper-entitlements.plist "$APP/PlugIns/SPJitHelper.appex"
+          codesign --force --sign - --entitlements dist/app-entitlements.plist "$APP"
+          codesign --verify --deep --strict "$APP"
+          cp -R "$APP" Payload/
+          zip -q -X -r dist/Slashplayed-Enhanced-EXPERIMENTAL.ipa Payload
+          cp "$RUNNER_TEMP/slashplayed-device-kit.zip" dist/
+          shasum -a 256 dist/Slashplayed-Enhanced-EXPERIMENTAL.ipa dist/slashplayed-device-kit.zip > dist/SHA256SUMS
+          python3 - <<'PY'
+          import os, plistlib, zipfile
+          with zipfile.ZipFile("dist/Slashplayed-Enhanced-EXPERIMENTAL.ipa") as z:
+              app = "Payload/Slashplayed.app/"
+              assert plistlib.loads(z.read(app+"Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]
+              assert plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]+".helper"
+              assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+          print("IPA structurally valid; SideStore signing and JIT NOT yet verified")
+          PY
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashplayed-enhanced-ipa-experimental
+          path: |
+            dist/Slashplayed-Enhanced-EXPERIMENTAL.ipa
+            dist/slashplayed-device-kit.zip
+            dist/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
