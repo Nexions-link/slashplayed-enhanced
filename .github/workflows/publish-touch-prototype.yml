@@ -1,0 +1,59 @@
+# Publish the successful, existing IPA/device-kit as normal GitHub Release assets.
+# No rebuild, Apple credentials, or Blizzard client files are involved.
+name: Publish Touch Prototype Downloads
+
+on:
+  push:
+    branches: [feature/official-touch]
+    paths:
+      - .github/workflows/publish-touch-prototype.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified successful iPhone build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN=45257009423
+          REPO="$GITHUB_REPOSITORY"
+          status="$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq .conclusion)"
+          test "$status" = success
+          mkdir -p dist
+          gh run download "$RUN" --repo "$REPO" --name slashplayed-official-touch-ipa-prototype --dir dist
+          test -s dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa
+          test -s dist/slashplayed-device-kit.zip
+          test -s dist/SHA256SUMS
+          sha256sum -c dist/SHA256SUMS
+
+      - name: Publish simple no-login download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          TAG="touch-prototype-20261123"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa dist/slashplayed-device-kit.zip dist/SHA256SUMS --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" \
+              dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa \
+              dist/slashplayed-device-kit.zip \
+              dist/SHA256SUMS \
+              --repo "$REPO" \
+              --target 73b4d60353951c571b3f0fef62f9bd1a2ab93816 \
+              --title "Slashplayed Official + Touch — iPhone prototype" \
+              --prerelease \
+              --notes "Experimental iPhone build based on official Slashplayed with touch joystick, Space button and SPTouchBars. GitHub Actions build #45257009423 passed; iPhone, JIT and simultaneous touch interaction are not yet independently validated. For Windows Companion, use slashplayed-device-kit.zip with slashplayed-cli.exe install --kit. The IPA is intended for sideloading and may need pairing separately."
+          fi
+          gh release view "$TAG" --repo "$REPO" --json url,assets --jq '{url:.url,assets:[.assets[].name]}'
