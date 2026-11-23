@@ -60,7 +60,7 @@ controls = """            Section("Enhanced On-screen Controls") {
 # Attach Enhanced controls to the touch section; preserve official two/three-finger touch selector.
 once(
     "    private var touch: some View {\n        Section {\n",
-    "    private var touch: some View {\n" + controls + "        Section {\n"
+    "    @ViewBuilder private var touch: some View {\n" + controls + "        Section {\n"
 )
 
 # Take actual shipped Enhanced UI (the trio of native control pages) without its obsolete
