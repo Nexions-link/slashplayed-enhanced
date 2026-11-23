@@ -1,0 +1,184 @@
+# Experimental, unsigned SideStore candidate. No Apple ID, profiles, Blizzard files or secrets.
+# NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
+name: Build Official Slashplayed with Enhanced Touch (prototype)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feature/official-touch']
+    paths:
+      - .github/workflows/build-official-touch-ipa.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-touch-prototype
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      XCODE_APP: /Applications/Xcode_27.1.app
+      XCODEGEN_VERSION: 2.46.0
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      RUSTUP_VERSION: 1.29.2
+      RUSTUP_SHA256: f7c7e11eb2e07f006e532a8aaac77b32f4527d305ac386c0c633ca6133d35ca9
+      IDEVICE_CACHE_PATHS: |
+        work/idevice/BUILD.txt
+        work/idevice/include
+        work/idevice/ios
+        work/idevice/xros
+        work/idevice/macos
+      SPAPPLE_CACHE_PATHS: |
+        work/spapple/BUILD.txt
+        work/spapple/ios
+        work/spapple/xros
+      BUNDLE_ID: com.nexions.slashplayed.enhanced
+
+    steps:
+      - name: Checkout touch control sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Start from working official Windows-compatible loader; add Enhanced touch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENHANCED_SHA="$GITHUB_SHA"
+          git remote add official https://github.com/paulstraw/slashplayed.git
+          git fetch official main
+          git reset --hard official/main
+          # Restore only the native touch input modules and WoW touch action bars.
+          git checkout "$ENHANCED_SHA" -- \
+            shims/appkit/spevent.m \
+            shims/appkit/spjoystick.m \
+            shims/appkit/spthumb.m \
+            shims/appkit/spkeys.m \
+            addon/SPTouchBars/SPTouchBars.lua \
+            addon/SPTouchBars/SPTouchBars.toc \
+            addon/SPTouchBars/SPTouchBars.tga
+          python3 - <<'PY'
+          from pathlib import Path
+          def replace_once(path, before, after):
+              p=Path(path)
+              s=p.read_text()
+              assert s.count(before)==1, f"unexpected upstream source in {path}: {before[:100]}"
+              p.write_text(s.replace(before,after))
+          # The touch joystick must learn when the game first renders.
+          replace_once("shims/appkit/spuikit.m",
+              "static BOOL sp_scene_active;",
+              "static atomic_bool sp_game_presented;\nstatic BOOL sp_scene_active;")
+          replace_once("shims/appkit/sploading.m",
+              "static void sp_loading_frame(void) {\n",
+              "static void sp_loading_frame(void) {\n"
+              "#if !TARGET_OS_VISION\n"
+              "    if (!atomic_exchange(&sp_game_presented, true))\n"
+              "        dispatch_async(dispatch_get_main_queue(), ^{\n"
+              "            [NSNotificationCenter.defaultCenter postNotificationName:@\"SPGameFirstFrame\" object:nil];\n"
+              "        });\n"
+              "#endif\n")
+          # The Space button is visible by default so a second finger can jump while running.
+          replace_once("shims/appkit/spkeys.m",
+              "BOOL enabled = [defaults boolForKey:_enabledKey];  // optional buttons start hidden",
+              "BOOL enabled = ![defaults objectForKey:_enabledKey] ? (_usage == 0x2C) : [defaults boolForKey:_enabledKey];")
+          # Ship touch action bars inside the IPA, and let the official launcher place them on device.
+          replace_once("scripts/release/device-kit.sh",
+              "for a in SPMovie SPHover SPKeyboard; do",
+              "for a in SPMovie SPHover SPKeyboard SPTouchBars; do")
+          replace_once("scripts/release/device-kit.sh",
+              "      cp \"$ROOT/addon/$a/$a.toc\" \"$ROOT/addon/$a/$a.lua\" \"$APP/addons/$a/\"\n",
+              "      cp \"$ROOT/addon/$a/$a.toc\" \"$ROOT/addon/$a/$a.lua\" \"$APP/addons/$a/\"\n"
+              "      [ \"$a\" != SPTouchBars ] || cp \"$ROOT/addon/$a/$a.tga\" \"$APP/addons/$a/\"\n")
+          replace_once("apps/client/spcdn.m",
+              "for (NSString *name in hover ? @[@\"SPMovie\", @\"SPHover\"] : @[@\"SPMovie\", @\"SPKeyboard\"])",
+              "for (NSString *name in hover ? @[@\"SPMovie\", @\"SPHover\"] : @[@\"SPMovie\", @\"SPKeyboard\", @\"SPTouchBars\"])")
+          replace_once("apps/client/spcdn.m",
+              "for (NSString *ext in @[@\"toc\", @\"lua\"])",
+              "for (NSString *ext in ([name isEqualToString:@\"SPTouchBars\"] ? @[@\"toc\", @\"lua\", @\"tga\"] : @[@\"toc\", @\"lua\"]))")
+          PY
+          test -f apps/client/spguest.c
+          test -f apps/client/spguestlaunch.m
+          test -f shims/appkit/spjoystick.m
+          test -f addon/SPTouchBars/SPTouchBars.lua
+          echo "Official unsigned-game loader retained; Enhanced touch overlay staged"
+      - name: Verify official loader and select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f addon/SPTouchBars/SPTouchBars.lua
+          test -f scripts/release/device-kit.sh
+          test -f .github/actions/companion-deps/action.yml || test -f .github/actions/companion-deps/action.yaml
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+      - name: Prepare pinned dependencies
+        uses: ./.github/actions/companion-deps
+      - name: Fetch font and license
+        shell: bash
+        run: scripts/fetch-font.sh
+      - name: Build unsigned official-loader touch device kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh apps/companion/bundle-resources.sh --build "$RUNNER_TEMP/resources"
+          scripts/release/device-kit.sh "$RUNNER_TEMP/resources" "$RUNNER_TEMP/slashplayed-device-kit.zip"
+      - name: Package separate experimental touch IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging dist Payload
+          unzip -q "$RUNNER_TEMP/slashplayed-device-kit.zip" -d staging
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          bid = os.environ["BUNDLE_ID"]
+          app = Path("staging/ios/Slashplayed.app")
+          helper = app / "PlugIns/SPJitHelper.appex"
+          for p, ident in ((app/"Info.plist", bid), (helper/"Info.plist", bid+".helper")):
+              with p.open("rb") as f: data = plistlib.load(f)
+              assert data["CFBundleIdentifier"] == "@BUNDLE_ID@", (p, data["CFBundleIdentifier"])
+              data["CFBundleIdentifier"] = ident
+              with p.open("wb") as f: plistlib.dump(data, f)
+          for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
+              assert p.is_file(), f"missing runtime/control component: {p}"
+          with open("dist/app-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True,
+                             "com.apple.developer.kernel.increased-memory-limit": True,
+                             "com.apple.developer.kernel.extended-virtual-addressing": True}, f)
+          with open("dist/helper-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True}, f)
+          print("Bundle identifier:", bid, "; touch addon present")
+          PY
+          APP=staging/ios/Slashplayed.app
+          for lib in "$APP"/Frameworks/*.dylib; do
+            codesign --force --sign - "$lib"
+          done
+          codesign --force --sign - --entitlements dist/helper-entitlements.plist "$APP/PlugIns/SPJitHelper.appex"
+          codesign --force --sign - --entitlements dist/app-entitlements.plist "$APP"
+          codesign --verify --deep --strict "$APP"
+          cp -R "$APP" Payload/
+          zip -q -X -r dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa Payload
+          cp "$RUNNER_TEMP/slashplayed-device-kit.zip" dist/
+          shasum -a 256 dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa dist/slashplayed-device-kit.zip > dist/SHA256SUMS
+          python3 - <<'PY'
+          import os, plistlib, zipfile
+          with zipfile.ZipFile("dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa") as z:
+              app = "Payload/Slashplayed.app/"
+              assert plistlib.loads(z.read(app+"Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]
+              assert plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]+".helper"
+              assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+          print("IPA structurally valid; SideStore signing and JIT NOT yet verified")
+          PY
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashplayed-official-touch-ipa-prototype
+          path: |
+            dist/Slashplayed-Official-TOUCH-PROTOTYPE.ipa
+            dist/slashplayed-device-kit.zip
+            dist/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
