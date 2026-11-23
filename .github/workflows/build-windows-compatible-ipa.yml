@@ -32,13 +32,10 @@ jobs:
         work/idevice/ios
         work/idevice/xros
         work/idevice/macos
-      ZSIGN_CACHE_PATHS: |
-        work/zsign/BUILD.txt
-        work/zsign/licenses
-        work/zsign/src/zsign/src
-        work/zsign/ios
-        work/zsign/xros
-        work/zsign/macos
+      SPAPPLE_CACHE_PATHS: |
+        work/spapple/BUILD.txt
+        work/spapple/ios
+        work/spapple/xros
       BUNDLE_ID: com.nexions.slashplayed.enhanced
 
     steps:
