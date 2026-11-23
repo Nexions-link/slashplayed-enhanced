@@ -2,6 +2,7 @@
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
 name: Build Slashplayed Full Enhanced Upgrade (prototype)
+# SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
   workflow_dispatch:
