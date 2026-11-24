@@ -1,7 +1,7 @@
 # Enhanced native controls on the modern official Windows-ready game loader.
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
-name: Build Nexions Enhanced 1.6.3 (monitor candidate)
+name: Build Nexions Enhanced 1.7.0 (alpha 1 diagnostic candidate)
 # SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
@@ -13,7 +13,7 @@ on:
         type: string
         default: 'slashplayed'
   push:
-    branches: ['feature/official-touch']
+    branches: ['feature/nexions-1.7.0-diagnostics']
     paths:
       - .github/workflows/build-enhanced-upgrade.yml
 
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: full-enhanced-upgrade
+  group: nexions-170-diagnostics
   cancel-in-progress: false
 
 jobs:
@@ -83,6 +83,64 @@ jobs:
               s=p.read_text()
               assert s.count(before)==1, f"unexpected upstream source in {path}: {before[:100]}"
               p.write_text(s.replace(before,after))
+          # Nexions alpha 1: record network-path and app-lifecycle events in the existing local console log.
+          # No addresses, SSIDs, credentials, game packets or remote telemetry are collected.
+          replace_once("apps/client/launcher.m", "#import <UIKit/UIKit.h>",
+                       "#import <UIKit/UIKit.h>\n#import <Network/Network.h>")
+          replace_once("apps/client/launcher.m",
+                       "void sp_launch_say(NSString *s) { say(s); }  // spjit.m, sppair.m, and spvpn.m log through it",
+                       """void sp_launch_say(NSString *s) { say(s); }  // spjit.m, sppair.m, and spvpn.m log through it
+          
+          static void nexions_network_diagnostics(void) {
+              static nw_path_monitor_t monitor;
+              static dispatch_queue_t queue;
+              static dispatch_once_t once;
+              dispatch_once(&once, ^{
+                  queue = dispatch_queue_create("org.nexions.network-diagnostics", DISPATCH_QUEUE_SERIAL);
+                  monitor = nw_path_monitor_create();
+                  nw_path_monitor_set_queue(monitor, queue);
+                  nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+                      nw_path_status_t status = nw_path_get_status(path);
+                      say([NSString stringWithFormat:@"nexions: path uptime=%.3f status=%s wifi=%d cellular=%d wired=%d other=%d expensive=%d constrained=%d ipv4=%d ipv6=%d dns=%d",
+                           NSProcessInfo.processInfo.systemUptime,
+                           status == nw_path_status_satisfied ? "satisfied" : status == nw_path_status_satisfiable ? "satisfiable" : "unsatisfied",
+                           nw_path_uses_interface_type(path, nw_interface_type_wifi),
+                           nw_path_uses_interface_type(path, nw_interface_type_cellular),
+                           nw_path_uses_interface_type(path, nw_interface_type_wired),
+                           nw_path_uses_interface_type(path, nw_interface_type_other),
+                           nw_path_is_expensive(path), nw_path_is_constrained(path),
+                           nw_path_has_ipv4(path), nw_path_has_ipv6(path), nw_path_has_dns(path)]);
+                  });
+                  nw_path_monitor_start(monitor);
+                  for (NSString *name in @[UISceneDidActivateNotification, UISceneWillDeactivateNotification,
+                                            UISceneWillEnterForegroundNotification, UISceneDidEnterBackgroundNotification]) {
+                      [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *note) {
+                          say([NSString stringWithFormat:@"nexions: lifecycle %@ uptime=%.3f", note.name,
+                               NSProcessInfo.processInfo.systemUptime]);
+                      }];
+                  }
+                  say(@"nexions: 1.7.0 alpha 1 diagnostics enabled; path status is not proof of CDN reachability");
+              });
+          }
+          """)
+          replace_once("apps/client/launcher.m", "    delete_listed();\n    write_free_space();",
+                       "    nexions_network_diagnostics();\n    delete_listed();\n    write_free_space();")
+          replace_once("apps/companion/project.yml", 'MARKETING_VERSION: "1.6.1"', 'MARKETING_VERSION: "1.7.0"')
+          replace_once("apps/client/Info.plist", '<key>CFBundleVersion</key><string>1</string>',
+                       '<key>CFBundleVersion</key><string>1701</string>')
+          # Extend launcher CDN diagnostics: only status/byte counts and timings, not URLs.
+          # This covers the launcher downloads; the guest game's TACT transfers are separate.
+          replace_once("apps/client/spcdn.m", "    config.waitsForConnectivity = NO;\n    NSURLSession *session",
+                       "    config.waitsForConnectivity = NO;\n    config.allowsCellularAccess = YES;\n    NSURLSession *session")
+          replace_once("apps/client/spcdn.m", "        [task resume];\n        while (!atomic_load(&done))",
+                       "        double nexionsStart = NSProcessInfo.processInfo.systemUptime;\n        [task resume];\n        while (!atomic_load(&done))")
+          replace_once("apps/client/spcdn.m", "        before += body.length;\n        if (!body) *problem = why;",
+                       """        fprintf(stderr, "[sp:nexions] launcher CDN %s bytes=%llu elapsed=%.3f error=%s\\n",
+                          body ? "ok" : "failed", (unsigned long long)MAX(task.countOfBytesReceived, 0),
+                          NSProcessInfo.processInfo.systemUptime - nexionsStart,
+                          body ? "none" : (why.UTF8String ?: "unknown"));
+                  before += body.length;
+                  if (!body) *problem = why;""")
           # The touch joystick must learn when the game first renders.
           replace_once("shims/appkit/spuikit.m",
               "static BOOL sp_scene_active;",
@@ -229,8 +287,8 @@ jobs:
               assert data["CFBundleIdentifier"] == "@BUNDLE_ID@", (p, data["CFBundleIdentifier"])
               data["CFBundleIdentifier"] = ident
               if p.name == "Info.plist" and p.parent == app:
-                  data["CFBundleShortVersionString"] = "1.6.3"
-                  data["CFBundleVersion"] = "1613"
+                  data["CFBundleShortVersionString"] = "1.7.0"
+                  data["CFBundleVersion"] = "1701"
               with p.open("wb") as f: plistlib.dump(data, f)
           for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
               assert p.is_file(), f"missing runtime/control component: {p}"
@@ -260,12 +318,23 @@ jobs:
               assert plistlib.loads(z.read(app+"Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]
               assert plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]+".helper"
               assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
-          print("IPA structurally valid; same Team ID/signature and SideStore update NOT yet verified")
+          with zipfile.ZipFile("dist/slashplayed-device-kit.zip") as z:
+              import json
+              assert json.loads(z.read("kit.json"))["version"] == "1.7.0"
+              app = "ios/Slashplayed.app/"
+              main = plistlib.loads(z.read(app+"Info.plist"))
+              helper = plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))
+              assert main["CFBundleShortVersionString"] == "1.7.0"
+              assert main["CFBundleVersion"] == "1701"
+              assert main["CFBundleIdentifier"] == "@BUNDLE_ID@"
+              assert helper["CFBundleIdentifier"] == "@BUNDLE_ID@"
+              assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+          print("IPA and Windows kit structurally valid; on-device JIT, LTE, and renewal NOT verified")
           PY
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: slashplayed-full-enhanced-upgrade-candidate
+          name: slashplayed-nexions-170-alpha1
           path: |
             dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
             dist/slashplayed-device-kit.zip
