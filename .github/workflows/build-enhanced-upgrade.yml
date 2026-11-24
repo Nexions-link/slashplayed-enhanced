@@ -1,7 +1,7 @@
 # Enhanced native controls on the modern official Windows-ready game loader.
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
-name: Build Nexions Enhanced 1.7.0 (alpha 2, official v1.7.0)
+name: Build Nexions Enhanced 1.7.0 (alpha 3, controls polish)
 # SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
@@ -13,7 +13,7 @@ on:
         type: string
         default: 'slashplayed'
   push:
-    branches: ['feature/nexions-1.7.0-diagnostics']
+    branches: ['feature/nexions-170-controls-polish']
     paths:
       - .github/workflows/build-enhanced-upgrade.yml
 
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nexions-170-diagnostics
+  group: nexions-170-controls-polish
   cancel-in-progress: false
 
 jobs:
@@ -84,7 +84,7 @@ jobs:
               s=p.read_text()
               assert s.count(before)==1, f"unexpected upstream source in {path}: {before[:100]}"
               p.write_text(s.replace(before,after))
-          # Nexions alpha 2: record network-path and app-lifecycle events in the existing local console log.
+          # Nexions alpha 3: record network-path and app-lifecycle events in the existing local console log.
           # No addresses, SSIDs, credentials, game packets or remote telemetry are collected.
           replace_once("apps/client/launcher.m", "#import <UIKit/UIKit.h>",
                        "#import <UIKit/UIKit.h>\n#import <Network/Network.h>")
@@ -120,7 +120,7 @@ jobs:
                                NSProcessInfo.processInfo.systemUptime]);
                       }];
                   }
-                  say(@"nexions: 1.7.0 alpha 2 diagnostics enabled; path status is not proof of CDN reachability");
+                  say(@"nexions: 1.7.0 alpha 3 diagnostics enabled; path status is not proof of CDN reachability");
               });
           }
           """)
@@ -128,7 +128,7 @@ jobs:
                        "    nexions_network_diagnostics();\n    delete_listed();\n    write_free_space();")
           assert 'MARKETING_VERSION: "1.7.0"' in Path('apps/companion/project.yml').read_text()
           replace_once("apps/client/Info.plist", '<key>CFBundleVersion</key><string>1</string>',
-                       '<key>CFBundleVersion</key><string>1702</string>')
+                       '<key>CFBundleVersion</key><string>1703</string>')
           # Extend launcher CDN diagnostics: only status/byte counts and timings, not URLs.
           # This covers the launcher downloads; the guest game's TACT transfers are separate.
           replace_once("apps/client/spcdn.m", "    config.waitsForConnectivity = NO;\n    NSURLSession *session",
@@ -232,12 +232,125 @@ jobs:
                           Toggle("Show at game start", isOn: Binding(
                               get: { UserDefaults.standard.bool(forKey: "sp_nexions_monitor_on_start") },
                               set: { UserDefaults.standard.set($0, forKey: "sp_nexions_monitor_on_start"); settings.reload() }))
-                          Text("Hold five fingers briefly to show or hide the monitor. Drag it to move it; tap × to close. Disk growth is an estimate, not network throughput.")
+                          Text("Hold five fingers briefly to show or hide the compact FPS and heat monitor. Drag it to move it. Heat is the iOS thermal state, not degrees.")
                               .font(.footnote).foregroundStyle(.secondary)
                       }
           ''' + key)
           p.write_text(s)
           PY
+          # Reject regressions in hit testing and the compact HUD.
+          ! grep -E 'sp_joystick_touch_margin|SPJoystickShield|SPKeyboardShield' shims/appkit/spjoystick.m shims/appkit/spkeys.m
+          ! grep -E 'batteryMonitoring|sp_nexions_scan_store|sp_nexions_memory|Disk growth' shims/appkit/spnexionsmonitor.m
+          grep -q 'CGFloat h = 23;' shims/appkit/spnexionsmonitor.m
+          grep -q 'bezierPathWithRoundedRect:self.bounds' shims/appkit/spthumb.m
+          grep -q 'case .joystick: joystick.navigationTitle("Joystick")
+          grep -q 'five.numberOfTouchesRequired = 5' shims/appkit/spevent.m
+          grep -q 'sp_nexions_frames' shims/appkit/sploading.m
+          grep -q 'Enhanced On-screen Controls' apps/client/spsettings.swift
+          grep -q 'Button("Forget Apple Token"' apps/client/spsettings.swift
+          grep -q 'NavigationLink("Addons"' apps/client/spsettings.swift
+          test -f apps/client/spguest.c
+          test -f apps/client/spguestlaunch.m
+          test -f shims/appkit/spjoystick.m
+          test -f addon/SPTouchBars/SPTouchBars.lua
+          # Verify the release's pairing, helper, network wait and Apple authentication files are untouched.
+          git diff --exit-code HEAD -- apps/client/spvpn.m apps/client/sppair.m apps/client/spjit.m apps/client/spguestlaunch.m apps/client/spapple.m apps/client/spapple/src/lib.rs apps/client/helper apps/client/spvpnscreen.swift apps/companion-rs/src/account.rs
+          grep -q 'sp_net_wait(pump, region)' apps/client/launcher.m
+          echo "Official v1.7.0 release fixes retained; Enhanced touch controls and monitor ported"
+      - name: Verify official loader and select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f addon/SPTouchBars/SPTouchBars.lua
+          test -f scripts/release/device-kit.sh
+          test -f .github/actions/companion-deps/action.yml || test -f .github/actions/companion-deps/action.yaml
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+      - name: Prepare pinned dependencies
+        uses: ./.github/actions/companion-deps
+      - name: Fetch font and license
+        shell: bash
+        run: scripts/fetch-font.sh
+      - name: Build unsigned official-loader touch device kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh apps/companion/bundle-resources.sh --build "$RUNNER_TEMP/resources"
+          scripts/release/device-kit.sh "$RUNNER_TEMP/resources" "$RUNNER_TEMP/slashplayed-device-kit.zip"
+      - name: Package Enhanced upgrade candidate IPA and Windows-compatible kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging dist Payload
+          unzip -q "$RUNNER_TEMP/slashplayed-device-kit.zip" -d staging
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          bid = os.environ["BUNDLE_ID"]
+          import re
+          assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", bid) and "." in bid or bid == "slashplayed", "invalid Bundle ID"
+          app = Path("staging/ios/Slashplayed.app")
+          helper = app / "PlugIns/SPJitHelper.appex"
+          for p, ident in ((app/"Info.plist", bid), (helper/"Info.plist", bid+".helper")):
+              with p.open("rb") as f: data = plistlib.load(f)
+              assert data["CFBundleIdentifier"] == "@BUNDLE_ID@", (p, data["CFBundleIdentifier"])
+              data["CFBundleIdentifier"] = ident
+              if p.name == "Info.plist" and p.parent == app:
+                  data["CFBundleShortVersionString"] = "1.7.0"
+                  data["CFBundleVersion"] = "1703"
+              with p.open("wb") as f: plistlib.dump(data, f)
+          for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
+              assert p.is_file(), f"missing runtime/control component: {p}"
+          with open("dist/app-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True,
+                             "com.apple.developer.kernel.increased-memory-limit": True,
+                             "com.apple.developer.kernel.extended-virtual-addressing": True}, f)
+          with open("dist/helper-entitlements.plist", "wb") as f:
+              plistlib.dump({"get-task-allow": True}, f)
+          print("Bundle identifier:", bid, "; touch addon present")
+          PY
+          APP=staging/ios/Slashplayed.app
+          for lib in "$APP"/Frameworks/*.dylib; do
+            codesign --force --sign - "$lib"
+          done
+          codesign --force --sign - --entitlements dist/helper-entitlements.plist "$APP/PlugIns/SPJitHelper.appex"
+          codesign --force --sign - --entitlements dist/app-entitlements.plist "$APP"
+          codesign --verify --deep --strict "$APP"
+          cp -R "$APP" Payload/
+          zip -q -X -r dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa Payload
+          cp "$RUNNER_TEMP/slashplayed-device-kit.zip" dist/
+          shasum -a 256 dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa dist/slashplayed-device-kit.zip > dist/SHA256SUMS
+          python3 - <<'PY'
+          import os, plistlib, zipfile
+          with zipfile.ZipFile("dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa") as z:
+              app = "Payload/Slashplayed.app/"
+              assert plistlib.loads(z.read(app+"Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]
+              assert plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]+".helper"
+              assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+          with zipfile.ZipFile("dist/slashplayed-device-kit.zip") as z:
+              import json
+              assert json.loads(z.read("kit.json"))["version"] == "1.7.0"
+              app = "ios/Slashplayed.app/"
+              main = plistlib.loads(z.read(app+"Info.plist"))
+              helper = plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))
+              assert main["CFBundleShortVersionString"] == "1.7.0"
+              assert main["CFBundleVersion"] == "1703"
+              assert main["CFBundleIdentifier"] == "@BUNDLE_ID@"
+              assert helper["CFBundleIdentifier"] == "@BUNDLE_ID@"
+              assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+          print("IPA and Windows kit structurally valid; on-device JIT, LTE, and renewal NOT verified")
+          PY
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slashplayed-nexions-170-alpha3-controls
+          path: |
+            dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
+            dist/slashplayed-device-kit.zip
+            dist/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
+ apps/client/spsettings.swift
           grep -q 'Nexions Performance Monitor' apps/client/spsettings.swift
           grep -q 'five.numberOfTouchesRequired = 5' shims/appkit/spevent.m
           grep -q 'sp_nexions_frames' shims/appkit/sploading.m
@@ -292,7 +405,7 @@ jobs:
               data["CFBundleIdentifier"] = ident
               if p.name == "Info.plist" and p.parent == app:
                   data["CFBundleShortVersionString"] = "1.7.0"
-                  data["CFBundleVersion"] = "1702"
+                  data["CFBundleVersion"] = "1703"
               with p.open("wb") as f: plistlib.dump(data, f)
           for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
               assert p.is_file(), f"missing runtime/control component: {p}"
@@ -329,7 +442,7 @@ jobs:
               main = plistlib.loads(z.read(app+"Info.plist"))
               helper = plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))
               assert main["CFBundleShortVersionString"] == "1.7.0"
-              assert main["CFBundleVersion"] == "1702"
+              assert main["CFBundleVersion"] == "1703"
               assert main["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert helper["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
@@ -338,7 +451,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: slashplayed-nexions-170-alpha2
+          name: slashplayed-nexions-170-alpha3-controls
           path: |
             dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
             dist/slashplayed-device-kit.zip
