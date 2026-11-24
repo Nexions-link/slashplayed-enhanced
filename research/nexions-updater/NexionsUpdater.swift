@@ -84,7 +84,7 @@ private struct NXAsset: Decodable {
               let pub = SecKeyCopyPublicKey(key),
               let sig = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, message, &error),
               SecKeyVerifySignature(pub, .ecdsaSignatureMessageX962SHA256, message, sig, &error) else {
-            keyStatus = "Failed: " + (error?.takeRetainedValue().localizedDescription ?? "Key/signature verification failed")
+            keyStatus = "Failed: " + (error.map { String(describing: $0.takeRetainedValue()) } ?? "Key/signature verification failed")
             return
         }
         keyStatus = "PASS: temporary local key and signature verified. App signing not tested."
