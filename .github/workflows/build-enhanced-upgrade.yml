@@ -1,7 +1,7 @@
 # Enhanced native controls on the modern official Windows-ready game loader.
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
-name: Build Slashplayed Full Enhanced Upgrade (prototype)
+name: Build Nexions Enhanced 1.6.3 (monitor candidate)
 # SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
@@ -65,6 +65,7 @@ jobs:
           git checkout "$ENHANCED_SHA" -- \
             tools/port-enhanced-settings.py \
             shims/appkit/spevent-touch.m \
+            shims/appkit/spnexionsmonitor.m \
             shims/appkit/spjoystick.m \
             shims/appkit/spthumb.m \
             shims/appkit/spkeys.m \
@@ -95,6 +96,53 @@ jobs:
               "            [NSNotificationCenter.defaultCenter postNotificationName:@\"SPGameFirstFrame\" object:nil];\n"
               "        });\n"
               "#endif\n")
+          # Add the Nexions HUD without touching the existing game loader, signature or pairing.
+          replace_once("shims/appkit/spuikit.m",
+              "static atomic_bool sp_game_presented;",
+              "static atomic_bool sp_game_presented;\n"
+              "static atomic_bool sp_nexions_count_frames;\n"
+              "static _Atomic uint64_t sp_nexions_frames;")
+          replace_once("shims/appkit/sploading.m",
+              "static void sp_loading_frame(void) {\n",
+              "static void sp_loading_frame(void) {\n"
+              "#if !TARGET_OS_VISION\n"
+              "    if (atomic_load_explicit(&sp_nexions_count_frames, memory_order_relaxed))\n"
+              "        atomic_fetch_add_explicit(&sp_nexions_frames, 1, memory_order_relaxed);\n"
+              "#endif\n")
+          monitor = Path("shims/appkit/spnexionsmonitor.m").read_text()
+          replace_once("shims/appkit/spevent.m",
+              "@interface SPInputView : UIView <UIPointerInteractionDelegate, UIEditMenuInteractionDelegate>",
+              monitor + "\n@interface SPInputView : UIView <UIPointerInteractionDelegate, UIEditMenuInteractionDelegate>")
+          replace_once("shims/appkit/spevent.m",
+              "    NSArray<SPKeyboardButton *> *_keyboardButtons;\n",
+              "    NSArray<SPKeyboardButton *> *_keyboardButtons;\n"
+              "    SPNexionsMonitor *_nexionsMonitor;\n")
+          replace_once("shims/appkit/spevent.m",
+              "    NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;",
+              "    _nexionsMonitor = [[SPNexionsMonitor alloc] initWithFrame:CGRectZero];\n"
+              "    [self addSubview:_nexionsMonitor];\n"
+              "    UILongPressGestureRecognizer *five = [[UILongPressGestureRecognizer alloc] initWithTarget:_nexionsMonitor action:@selector(toggleGesture:)];\n"
+              "    five.numberOfTouchesRequired = 5;\n"
+              "    five.minimumPressDuration = .35;\n"
+              "    five.allowableMovement = 24;\n"
+              "    five.allowedTouchTypes = @[@(UITouchTypeDirect)];\n"
+              "    five.delaysTouchesBegan = NO;\n"
+              "    five.delaysTouchesEnded = NO;\n"
+              "    five.cancelsTouchesInView = YES;\n"
+              "    [self addGestureRecognizer:five];\n"
+              "    NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;")
+          replace_once("shims/appkit/spevent.m",
+              "    [_joystick layoutInRect:CGRectIntersection(safe, sp_game_rect())];\n",
+              "    [_joystick layoutInRect:CGRectIntersection(safe, sp_game_rect())];\n"
+              "    [_nexionsMonitor layoutInRect:CGRectIntersection(safe, sp_game_rect())];\n")
+          replace_once("shims/appkit/spevent.m",
+              "    [_joystick gameDidStart];\n",
+              "    [_joystick gameDidStart];\n"
+              "    if ([NSUserDefaults.standardUserDefaults boolForKey:SPNexionsMonitorOnStartKey]) [_nexionsMonitor showMonitor];\n")
+          replace_once("shims/appkit/spevent.m",
+              "    [_thumbButton cancelHold];\n    for (SPKeyboardButton *button in _keyboardButtons) [button cancelInput];",
+              "    [_nexionsMonitor hideMonitor];\n"
+              "    [_thumbButton cancelHold];\n    for (SPKeyboardButton *button in _keyboardButtons) [button cancelInput];")
           # The Space button is visible by default so a second finger can jump while running.
           replace_once("shims/appkit/spkeys.m",
               "BOOL enabled = [defaults boolForKey:_enabledKey];  // optional buttons start hidden",
@@ -115,6 +163,25 @@ jobs:
               "for (NSString *ext in ([name isEqualToString:@\"SPTouchBars\"] ? @[@\"toc\", @\"lua\", @\"tga\"] : @[@\"toc\", @\"lua\"]))")
           PY
           python3 tools/port-enhanced-settings.py apps/client/spsettings.swift "$RUNNER_TEMP/spsettings-enhanced.swift"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("apps/client/spsettings.swift")
+          s = p.read_text()
+          key = '            Section("Enhanced On-screen Controls") {'
+          assert s.count(key) == 1
+          s = s.replace(key, '''            Section("Nexions Performance Monitor") {
+                          Toggle("Show at game start", isOn: Binding(
+                              get: { UserDefaults.standard.bool(forKey: "sp_nexions_monitor_on_start") },
+                              set: { UserDefaults.standard.set($0, forKey: "sp_nexions_monitor_on_start"); settings.reload() }))
+                          Text("Hold five fingers briefly to show or hide the monitor. Drag it to move it; tap × to close. Disk growth is an estimate, not network throughput.")
+                              .font(.footnote).foregroundStyle(.secondary)
+                      }
+          ''' + key)
+          p.write_text(s)
+          PY
+          grep -q 'Nexions Performance Monitor' apps/client/spsettings.swift
+          grep -q 'five.numberOfTouchesRequired = 5' shims/appkit/spevent.m
+          grep -q 'sp_nexions_frames' shims/appkit/sploading.m
           grep -q 'Enhanced On-screen Controls' apps/client/spsettings.swift
           grep -q 'Button("Forget Apple Token"' apps/client/spsettings.swift
           grep -q 'NavigationLink("Addons"' apps/client/spsettings.swift
@@ -162,8 +229,8 @@ jobs:
               assert data["CFBundleIdentifier"] == "@BUNDLE_ID@", (p, data["CFBundleIdentifier"])
               data["CFBundleIdentifier"] = ident
               if p.name == "Info.plist" and p.parent == app:
-                  data["CFBundleShortVersionString"] = "1.6.2"
-                  data["CFBundleVersion"] = "1612"
+                  data["CFBundleShortVersionString"] = "1.6.3"
+                  data["CFBundleVersion"] = "1613"
               with p.open("wb") as f: plistlib.dump(data, f)
           for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
               assert p.is_file(), f"missing runtime/control component: {p}"
