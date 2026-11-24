@@ -45,9 +45,9 @@ once(
 # Make the native geometry, per-key toggles and positions editable from the current official sheet.
 once(
     "                case .acknowledgements: AcknowledgementsView(settings: settings)",
-    """                case .joystick: joystick.navigationTitle("Joystick").toolbar { DoneButton(settings: settings) }
-                case .rightClick: rightClickButton.navigationTitle("Right-click Button").toolbar { DoneButton(settings: settings) }
-                case .keyboard: keyboard.navigationTitle("Keyboard Buttons").toolbar { DoneButton(settings: settings) }
+    """                case .joystick: joystick.navigationTitle("Joystick")
+                case .rightClick: rightClickButton.navigationTitle("Right-click Button")
+                case .keyboard: keyboard.navigationTitle("Keyboard Buttons")
                 case .acknowledgements: AcknowledgementsView(settings: settings)"""
 )
 
