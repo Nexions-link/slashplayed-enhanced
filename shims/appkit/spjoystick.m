@@ -4,8 +4,6 @@ static NSString *const sp_joystick_enabled_key = @"sp_joystick_enabled";
 static NSString *const sp_joystick_position_key = @"sp_joystick_position";
 static NSString *const sp_joystick_size_key = @"sp_joystick_size";
 static const CGFloat sp_joystick_default_size = 156, sp_joystick_min_size = 100, sp_joystick_max_size = 260;
-// About one centimeter on a full-size iPad. Fixed points keep the shield independent of stick size.
-static const CGFloat sp_joystick_touch_margin = 52;
 static const NSTimeInterval sp_joystick_move_hold = 2;
 
 @protocol SPMovableControl <NSObject>
@@ -26,22 +24,6 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
 - (void)beginMove:(UITouch *)touch;
 - (void)moveWithTouch:(UITouch *)touch;
 - (void)endMove;
-@end
-
-// A touch that begins in the margin belongs here until it lifts, even if it drifts onto the game or
-// into the stick. Never forward it up the responder chain, and never turn it into movement.
-@interface SPJoystickShield : UIView
-@property(nonatomic, weak) SPJoystick *joystick;
-@end
-@implementation SPJoystickShield
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    CGPoint p = [self.joystick convertPoint:point fromView:self];
-    return [self.joystick pointInside:p withEvent:event] && ![self.joystick containsStickPoint:p];
-}
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
 @end
 
 @interface SPJoystickHandle : UIControl
@@ -104,6 +86,11 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
         _progress.path = [UIBezierPath bezierPathWithOvalInRect:CGRectInset(self.bounds, 3, 3)].CGPath;
     }
 }
+// The reposition grip has a visible rounded face; transparent corners pass through.
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    if (self.ring) return [[UIBezierPath bezierPathWithOvalInRect:self.bounds] containsPoint:point];
+    return [[UIBezierPath bezierPathWithRoundedRect:_grip.frame cornerRadius:_grip.layer.cornerRadius] containsPoint:point];
+}
 - (void)cancelTouch {
     _touch = nil;
     _holdGeneration++;
@@ -162,7 +149,6 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
     UIView *_knob;
     UILabel *_status;
     SPJoystickHandle *_handle;
-    SPJoystickShield *_shield;
     UITouch *_stickTouch;
     GCVirtualController *_virtualController;
     CGPoint _value, _position, _fingerStart, _centerStart;
@@ -183,12 +169,6 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
     self.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.45];
     self.isAccessibilityElement = NO;  // keep the move handle independently discoverable
     self.accessibilityIdentifier = @"sp.left-joystick";
-    _shield = [SPJoystickShield new];
-    _shield.joystick = self;
-    _shield.multipleTouchEnabled = YES;
-    _shield.isAccessibilityElement = NO;
-    _shield.accessibilityIdentifier = @"sp.left-joystick-shield";
-    [self addSubview:_shield];
     _knob = [UIView new];
     _knob.userInteractionEnabled = NO;
     _knob.backgroundColor = [gold colorWithAlphaComponent:0.65];
@@ -324,7 +304,6 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
         self.center = CGPointMake(centers.origin.x + centers.size.width * _position.x,
                                  centers.origin.y + centers.size.height * _position.y);
         _handle.frame = CGRectMake(size - 44, 0, 44, 44);
-        _shield.frame = CGRectInset(self.bounds, -sp_joystick_touch_margin, -sp_joystick_touch_margin);
         [self drawValue];
     }
     [self updateConnection];
@@ -332,22 +311,12 @@ static const NSTimeInterval sp_joystick_move_hold = 2;
 
 - (BOOL)containsStickPoint:(CGPoint)point {
     CGFloat r = self.bounds.size.width / 2;
-    return CGRectContainsPoint(self.bounds, point) &&
-           (hypot(point.x - r, point.y - r) <= r || CGRectContainsPoint(_handle.frame, point));
+    return hypot(point.x - r, point.y - r) <= r ||
+           [_handle pointInside:[_handle convertPoint:point fromView:self] withEvent:nil];
 }
 
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if ([self containsStickPoint:point]) return YES;
-    // Extend UIKit hit testing outside the visible circle without blocking a hardware pointer's clicks
-    // or hover there. allTouches can still be empty during UIKit's initial hit test.
-    if (event && event.type != UIEventTypeTouches) return NO;
-    for (UITouch *touch in event.allTouches) {
-        CGPoint p = [touch locationInView:self];
-        if (touch.phase == UITouchPhaseBegan && hypot(p.x - point.x, p.y - point.y) < 0.5 &&
-            touch.type != UITouchTypeDirect) return NO;
-    }
-    CGFloat r = self.bounds.size.width / 2;
-    return hypot(point.x - r, point.y - r) <= r + sp_joystick_touch_margin;
+    return [self containsStickPoint:point];
 }
 
 - (void)updateTouch:(UITouch *)touch {
