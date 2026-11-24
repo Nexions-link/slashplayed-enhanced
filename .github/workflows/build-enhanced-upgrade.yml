@@ -1,7 +1,7 @@
 # Enhanced native controls on the modern official Windows-ready game loader.
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
-name: Build Nexions Enhanced 1.7.0 (alpha 3, updater preflight)
+name: Build Nexions Enhanced 1.7.0 (alpha 3, updater and download manager)
 # SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: nexions-170-updater-alpha3
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -73,7 +73,9 @@ jobs:
             shims/appkit/spkeys.m \
             addon/SPTouchBars/SPTouchBars.lua \
             addon/SPTouchBars/SPTouchBars.toc \
-            addon/SPTouchBars/SPTouchBars.tga
+            addon/SPTouchBars/SPTouchBars.tga \
+            addon/NXDownload/NXDownload.lua \
+            addon/NXDownload/NXDownload.toc
           # Preserve modern official keyboard and text input, overlay only native touch controls.
           cp shims/appkit/spevent-touch.m shims/appkit/spevent.m
           grep -q sp_keyboard_forget shims/appkit/spevent.m
@@ -210,14 +212,14 @@ jobs:
           # Ship touch action bars inside the IPA, and let the official launcher place them on device.
           replace_once("scripts/release/device-kit.sh",
               "for a in SPMovie SPHover SPKeyboard; do",
-              "for a in SPMovie SPHover SPKeyboard SPTouchBars; do")
+              "for a in SPMovie SPHover SPKeyboard SPTouchBars NXDownload; do")
           replace_once("scripts/release/device-kit.sh",
               "      cp \"$ROOT/addon/$a/$a.toc\" \"$ROOT/addon/$a/$a.lua\" \"$APP/addons/$a/\"\n",
               "      cp \"$ROOT/addon/$a/$a.toc\" \"$ROOT/addon/$a/$a.lua\" \"$APP/addons/$a/\"\n"
               "      [ \"$a\" != SPTouchBars ] || cp \"$ROOT/addon/$a/$a.tga\" \"$APP/addons/$a/\"\n")
           replace_once("apps/client/spcdn.m",
               "for (NSString *name in hover ? @[@\"SPMovie\", @\"SPHover\"] : @[@\"SPMovie\", @\"SPKeyboard\"])",
-              "for (NSString *name in hover ? @[@\"SPMovie\", @\"SPHover\"] : @[@\"SPMovie\", @\"SPKeyboard\", @\"SPTouchBars\"])")
+              "for (NSString *name in hover ? @[@\"SPMovie\", @\"SPHover\"] : @[@\"SPMovie\", @\"SPKeyboard\", @\"SPTouchBars\", @\"NXDownload\"])")
           replace_once("apps/client/spcdn.m",
               "for (NSString *ext in @[@\"toc\", @\"lua\"])",
               "for (NSString *ext in ([name isEqualToString:@\"SPTouchBars\"] ? @[@\"toc\", @\"lua\", @\"tga\"] : @[@\"toc\", @\"lua\"]))")
@@ -268,6 +270,8 @@ jobs:
           grep -q 'Enhanced On-screen Controls' apps/client/spsettings.swift
           grep -q 'Button("Forget Apple Token"' apps/client/spsettings.swift
           grep -q 'NavigationLink("Addons"' apps/client/spsettings.swift
+          test -f addon/NXDownload/NXDownload.lua
+          grep -q GetDownloadedPercentage addon/NXDownload/NXDownload.lua
           test -f apps/client/spguest.c
           test -f apps/client/spguestlaunch.m
           test -f shims/appkit/spjoystick.m
@@ -346,6 +350,8 @@ jobs:
               assert plistlib.loads(z.read(app+"Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]
               assert plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))["CFBundleIdentifier"] == os.environ["BUNDLE_ID"]+".helper"
               assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+              assert app+"addons/NXDownload/NXDownload.lua" in z.namelist()
+              assert app+"addons/NXDownload/NXDownload.toc" in z.namelist()
           with zipfile.ZipFile("dist/slashplayed-device-kit.zip") as z:
               import json
               assert json.loads(z.read("kit.json"))["version"] == "1.7.0"
@@ -357,12 +363,14 @@ jobs:
               assert main["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert helper["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
+              assert app+"addons/NXDownload/NXDownload.lua" in z.namelist()
+              assert app+"addons/NXDownload/NXDownload.toc" in z.namelist()
           print("IPA and Windows kit structurally valid; on-device JIT, LTE, and renewal NOT verified")
           PY
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: slashplayed-nexions-170-alpha3
+          name: slashplayed-nexions-170-alpha3-download
           path: |
             dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
             dist/slashplayed-device-kit.zip
