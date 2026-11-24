@@ -1,8 +1,6 @@
 // Nexions performance HUD. Integrated into the existing iOS input view.
 // MIT; original Slashplayed and Enhanced retain their copyright and licenses.
 #if !TARGET_OS_VISION
-#import <mach/mach.h>
-#import <mach/task_info.h>
 
 static NSString *const SPNexionsMonitorPositionKey = @"sp_nexions_monitor_position";
 static NSString *const SPNexionsMonitorOnStartKey = @"sp_nexions_monitor_on_start";
@@ -27,42 +25,6 @@ static UIColor *sp_nexions_thermal_color(void) {
     return UIColor.whiteColor;
 }
 
-static NSString *sp_nexions_memory(void) {
-    task_vm_info_data_t info = {0};
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
-        return @"—";
-    return [NSString stringWithFormat:@"%.2f GB", (double)info.phys_footprint / 1e9];
-}
-
-// The CASC store is shared between game flavors in Documents/Data.
-// Allocated storage, not traffic or a percentage of the total Blizzard download.
-// Walk it only on a background queue and only while the monitor is visible.
-static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
-    NSURL *root = [NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/Data"] isDirectory:YES];
-    NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey,
-                                        NSURLTotalFileAllocatedSizeKey, NSURLFileAllocatedSizeKey];
-    __block BOOL ok = YES;
-    NSDirectoryEnumerator<NSURL *> *it = [NSFileManager.defaultManager enumeratorAtURL:root
-        includingPropertiesForKeys:keys options:0 errorHandler:^BOOL(NSURL *url, NSError *error) {
-            ok = NO; return NO;
-        }];
-    if (!it) return NO;
-    unsigned long long total = 0;
-    for (NSURL *file in it) {
-        @autoreleasepool {
-            NSDictionary *v = [file resourceValuesForKeys:keys error:nil];
-            if (!v) continue; // file may have been replaced by CASC during the scan
-            if ([v[NSURLIsSymbolicLinkKey] boolValue]) { [it skipDescendants]; continue; }
-            if (![v[NSURLIsRegularFileKey] boolValue]) continue;
-            NSNumber *size = v[NSURLTotalFileAllocatedSizeKey] ?: v[NSURLFileAllocatedSizeKey];
-            total += size.unsignedLongLongValue;
-        }
-    }
-    if (ok) *allocated = total;
-    return ok;
-}
-
 @interface SPNexionsMonitor : UIView
 - (void)toggleGesture:(UILongPressGestureRecognizer *)gesture;
 - (void)showMonitor;
@@ -71,34 +33,22 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
 @end
 
 @implementation SPNexionsMonitor {
-    UILabel *_head;
     UILabel *_stats;
     UILabel *_thermal;
-    UILabel *_store;
-    UIButton *_close;
     NSTimer *_timer;
     CGRect _safe;
     CGPoint _anchor;
     CGPoint _dragStart;
     BOOL _shown;
-    BOOL _wasBatteryMonitoring;
-    BOOL _scanning;
-    BOOL _storeValid;
-    BOOL _rateValid;
-    NSUInteger _generation;
     uint64_t _previousFrames;
     NSTimeInterval _previousTime;
-    NSTimeInterval _nextScan;
-    NSTimeInterval _lastStoreTime;
-    unsigned long long _allocated;
-    double _rate;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     self.hidden = YES;
     self.backgroundColor = [UIColor colorWithWhite:.055 alpha:.88];
-    self.layer.cornerRadius = 9;
+    self.layer.cornerRadius = 6;
     self.layer.borderColor = [UIColor colorWithWhite:.65 alpha:.4].CGColor;
     self.layer.borderWidth = 1;
     self.layer.zPosition = 2500;
@@ -112,21 +62,10 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
         if (isfinite(x) && isfinite(y))
             _anchor = CGPointMake(MAX(0, MIN(1, x)), MAX(0, MIN(1, y)));
     }
-    _head = [self labelWithSize:10];
-    _head.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
-    _head.text = @"NEXIONS · PERFORMANCE";
-    _head.textColor = [UIColor colorWithRed:.78 green:.84 blue:.91 alpha:1];
-    _stats = [self labelWithSize:12];
-    _thermal = [self labelWithSize:12];
-    _store = [self labelWithSize:11];
-    _store.numberOfLines = 2;
-    _close = [UIButton buttonWithType:UIButtonTypeSystem];
-    [_close setTitle:@"×" forState:UIControlStateNormal];
-    _close.titleLabel.font = [UIFont systemFontOfSize:21 weight:UIFontWeightRegular];
-    _close.tintColor = UIColor.whiteColor;
-    _close.accessibilityLabel = @"Hide performance monitor";
-    [_close addTarget:self action:@selector(closePressed:) forControlEvents:UIControlEventTouchUpInside];
-    [self addSubview:_close];
+    _stats = [self labelWithSize:11];
+    _thermal = [self labelWithSize:11];
+    _stats.textAlignment = NSTextAlignmentCenter;
+    _thermal.textAlignment = NSTextAlignmentCenter;
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragMonitor:)];
     pan.minimumNumberOfTouches = 1;
     pan.maximumNumberOfTouches = 1;
@@ -148,21 +87,22 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _head.frame = CGRectMake(10, 5, MAX(0, w - 47), 19);
-    _close.frame = CGRectMake(w - 36, 0, 36, 32);
-    _stats.frame = CGRectMake(10, 26, MAX(0, w - 20), 19);
-    _thermal.frame = CGRectMake(10, 45, MAX(0, w - 20), 19);
-    _store.frame = CGRectMake(10, 65, MAX(0, w - 20), 32);
+    _stats.frame = CGRectMake(4, 0, 56, self.bounds.size.height);
+    _thermal.frame = CGRectMake(62, 0, MAX(0, w - 66), self.bounds.size.height);
 }
 
 - (void)layoutInRect:(CGRect)rect {
     if (CGRectIsNull(rect) || CGRectIsEmpty(rect)) return;
     _safe = CGRectInset(rect, 8, 8);
-    CGFloat w = MIN(258, CGRectGetWidth(_safe));
-    CGFloat h = 102;
-    if (w < 140 || CGRectGetHeight(_safe) < h) return;
+    CGFloat w = MIN(120, CGRectGetWidth(_safe));
+    CGFloat h = 23;
+    if (w < 100 || CGRectGetHeight(_safe) < h) return;
     self.frame = CGRectMake(CGRectGetMinX(_safe) + _anchor.x * (CGRectGetWidth(_safe) - w),
                             CGRectGetMinY(_safe) + _anchor.y * (CGRectGetHeight(_safe) - h), w, h);
+}
+
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    return [[UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:self.layer.cornerRadius] containsPoint:point];
 }
 
 - (void)dragMonitor:(UIPanGestureRecognizer *)pan {
@@ -186,17 +126,9 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
     if (_shown) [self hideMonitor]; else [self showMonitor];
 }
 
-- (void)closePressed:(UIButton *)sender { [self hideMonitor]; }
-
 - (void)showMonitor {
     if (_shown) return;
     _shown = YES;
-    _generation++;
-    _nextScan = 0;
-    _storeValid = NO;
-    _rateValid = NO;
-    _wasBatteryMonitoring = UIDevice.currentDevice.batteryMonitoringEnabled;
-    UIDevice.currentDevice.batteryMonitoringEnabled = YES;
     _previousFrames = atomic_load_explicit(&sp_nexions_frames, memory_order_relaxed);
     _previousTime = NSProcessInfo.processInfo.systemUptime;
     atomic_store_explicit(&sp_nexions_count_frames, true, memory_order_relaxed);
@@ -214,12 +146,10 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
 - (void)hideMonitor {
     if (!_shown) return;
     _shown = NO;
-    _generation++;
     self.hidden = YES;
     [_timer invalidate];
     _timer = nil;
     atomic_store_explicit(&sp_nexions_count_frames, false, memory_order_relaxed);
-    if (!_wasBatteryMonitoring) UIDevice.currentDevice.batteryMonitoringEnabled = NO;
 }
 
 - (void)refreshMonitor {
@@ -229,39 +159,9 @@ static BOOL sp_nexions_scan_store(unsigned long long *allocated) {
     NSString *fps = now - _previousTime >= .5
         ? [NSString stringWithFormat:@"%.0f FPS", (double)(frames - _previousFrames)/(now - _previousTime)] : @"— FPS";
     if (now - _previousTime >= .5) { _previousFrames = frames; _previousTime = now; }
-    float level = UIDevice.currentDevice.batteryLevel;
-    NSString *battery = level >= 0 ? [NSString stringWithFormat:@"%.0f%%", level * 100] : @"—";
-    _stats.text = [NSString stringWithFormat:@"%@  •  RAM %@\n", fps, sp_nexions_memory()];
-    _thermal.text = [NSString stringWithFormat:@"Heat: %@  •  Battery %@", sp_nexions_thermal(), battery];
+    _stats.text = fps;
+    _thermal.text = sp_nexions_thermal();
     _thermal.textColor = sp_nexions_thermal_color();
-    if (!_storeValid) _store.text = @"Game data: measuring…";
-    else {
-        NSString *growth = _rateValid ? [NSString stringWithFormat:@"%+.2f MB/s", _rate / 1e6] : @"—";
-        _store.text = [NSString stringWithFormat:@"Game data: %.2f GB allocated\nDisk growth: %@ (20s avg)", (double)_allocated/1e9, growth];
-    }
-    if (_scanning || now < _nextScan) return;
-    _scanning = YES;
-    _nextScan = now + 20;
-    NSUInteger generation = _generation;
-    __weak SPNexionsMonitor *weak = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        unsigned long long bytes = 0;
-        BOOL ok = sp_nexions_scan_store(&bytes);
-        NSTimeInterval time = NSProcessInfo.processInfo.systemUptime;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SPNexionsMonitor *me = weak;
-            if (!me) return;
-            me->_scanning = NO;
-            if (!me->_shown || me->_generation != generation) return;
-            if (!ok) { me->_storeValid = NO; me->_rateValid = NO; return; }
-            NSTimeInterval elapsed = time - me->_lastStoreTime;
-            me->_rateValid = me->_storeValid && elapsed >= 1;
-            if (me->_rateValid) me->_rate = ((double)bytes - (double)me->_allocated)/elapsed;
-            me->_allocated = bytes;
-            me->_lastStoreTime = time;
-            me->_storeValid = YES;
-        });
-    });
 }
 
 - (void)dealloc {
