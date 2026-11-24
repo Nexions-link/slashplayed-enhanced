@@ -1,0 +1,72 @@
+# Publish the successful, existing IPA/device-kit as normal GitHub Release assets.
+# No rebuild, Apple credentials, or Blizzard client files are involved.
+name: Publish Nexions 1.6.3 Monitor Candidate
+
+on:
+  push:
+    branches: [feature/official-touch]
+    paths:
+      - .github/workflows/publish-nexions-monitor.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - name: Download verified successful iPhone build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN=45353495447
+          REPO="$GITHUB_REPOSITORY"
+          gh run watch "$RUN" --repo "$REPO" --exit-status --interval 30
+          status="$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq .conclusion)"
+          test "$status" = success
+          mkdir -p dist
+          gh run download "$RUN" --repo "$REPO" --name slashplayed-full-enhanced-upgrade-candidate --dir dist
+          test -s dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
+          test -s dist/slashplayed-device-kit.zip
+          test -s dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS) || sha256sum -c dist/SHA256SUMS
+          python3 - <<'PY'
+          import zipfile, plistlib
+          with zipfile.ZipFile("dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa") as z:
+              app = "Payload/Slashplayed.app/"
+              p = plistlib.loads(z.read(app + "Info.plist"))
+              h = plistlib.loads(z.read(app + "PlugIns/SPJitHelper.appex/Info.plist"))
+              assert p["CFBundleShortVersionString"] == "1.6.3"
+              assert p["CFBundleIdentifier"] == "slashplayed"
+              assert h["CFBundleIdentifier"] == "slashplayed.helper"
+          PY
+          gh api "repos/$REPO/contents/LICENSE?ref=b2c42d7f9937b1c44399177ccc7f0b615a9f0f9d" --jq .content | base64 -d > dist/LICENSE.txt
+          test -s dist/LICENSE.txt
+
+      - name: Publish simple no-login download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          TAG="nexions-v1.6.3"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa dist/slashplayed-device-kit.zip dist/SHA256SUMS dist/LICENSE.txt --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" \
+              dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa \
+              dist/slashplayed-device-kit.zip \
+              dist/SHA256SUMS dist/LICENSE.txt \
+              --repo "$REPO" \
+              --target b2c42d7f9937b1c44399177ccc7f0b615a9f0f9d \
+              --title "Slashplayed Enhanced by Nexions 1.6.3 — performance monitor test" \
+              --prerelease \
+              --notes "Experimental 1.6.3 candidate. Five-finger short hold toggles a native HUD; shows frame submissions per second, iOS thermal state, battery, process physical memory footprint, allocated game data and estimated disk growth. Disk growth is not actual network throughput or download completion percentage. Same generic IPA and helper identifiers as 1.6.2; use your own exact existing IDs and the same team in SideStore. Do not delete the working app. On-device behavior not yet tested. MIT: original Slashplayed by Straw Dynamics, Enhanced by rollarz; Nexions integration and performance monitor. No Blizzard binaries or private pairing records included."
+          fi
+          gh release view "$TAG" --repo "$REPO" --json url,assets --jq '{url:.url,assets:[.assets[].name]}'
