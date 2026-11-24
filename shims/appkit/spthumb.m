@@ -93,6 +93,10 @@ static const CGFloat sp_thumb_default_size = 76, sp_thumb_min_size = 44, sp_thum
                              centers.origin.y + centers.size.height * _position.y);
 }
 
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    return [[UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:self.layer.cornerRadius] containsPoint:point];
+}
+
 static BOOL sp_thumb_touch_active(UITouch *touch) {
     return touch && touch.phase != UITouchPhaseEnded && touch.phase != UITouchPhaseCancelled;
 }
