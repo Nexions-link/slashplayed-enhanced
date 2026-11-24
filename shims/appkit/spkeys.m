@@ -12,28 +12,12 @@ static const CGFloat sp_keyboard_default_size = 76, sp_keyboard_min_size = 44, s
 - (BOOL)containsKeyPoint:(CGPoint)point;
 @end
 
-// As with the joystick, a contact starting in the invisible margin stays inert until it lifts.
-@interface SPKeyboardShield : UIView
-@property(nonatomic, weak) SPKeyboardButton *button;
-@end
-@implementation SPKeyboardShield
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    CGPoint p = [self.button convertPoint:point fromView:self];
-    return [self.button pointInside:p withEvent:event] && ![self.button containsKeyPoint:p];
-}
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
-@end
-
 @implementation SPKeyboardButton {
     NSString *_name, *_enabledKey, *_positionKey;
     unsigned _usage;
     UIView *_face;
     UILabel *_label;
     SPJoystickHandle *_handle;
-    SPKeyboardShield *_shield;
     UITouch *_touch;
     CGPoint _position, _defaultPosition, _fingerStart, _centerStart;
     CGRect _centers;
@@ -62,10 +46,6 @@ static const CGFloat sp_keyboard_default_size = 76, sp_keyboard_min_size = 44, s
     if (usage == 0x2C) {
         self.accessibilityLabel = @"Spacebar";
         self.accessibilityHint = @"Press anywhere in the circle to hold Space. Hold still for two seconds until the ring fills, then drag to move.";
-        _shield = [SPKeyboardShield new]; _shield.button = self;
-        _shield.multipleTouchEnabled = YES;
-        _shield.accessibilityIdentifier = @"sp.key-space-shield";
-        [self insertSubview:_shield atIndex:0];
         _handle = [[SPJoystickHandle alloc] initWithFrame:CGRectZero];
         _handle.joystick = self; _handle.ring = YES;
         // The ring only draws feedback. Forward the circle's touch into its existing hold state machine.
@@ -107,7 +87,7 @@ static const CGFloat sp_keyboard_default_size = 76, sp_keyboard_min_size = 44, s
     double size = [savedSize isKindOfClass:NSNumber.class] ? [savedSize doubleValue] : sp_keyboard_default_size;
     if (!isfinite(size)) size = sp_keyboard_default_size;
     size = MAX(sp_keyboard_min_size, MIN(sp_keyboard_max_size, size));
-    CGFloat outer = size + (_handle ? 52 : 0), minimum = sp_keyboard_min_size + (_handle ? 52 : 0);
+    CGFloat outer = size, minimum = sp_keyboard_min_size;
     BOOL room = !CGRectIsNull(rect) && rect.size.width >= minimum + 16 && rect.size.height >= minimum + 16;
     if (room) outer = MIN(outer, MIN(rect.size.width, rect.size.height) - 16);
     CGRect centers = room ? CGRectInset(rect, outer / 2 + 8, outer / 2 + 8) : CGRectZero;
@@ -128,30 +108,20 @@ static const CGFloat sp_keyboard_default_size = 76, sp_keyboard_min_size = 44, s
     self.bounds = CGRectMake(0, 0, outer, outer);
     self.center = CGPointMake(centers.origin.x + centers.size.width * _position.x,
                              centers.origin.y + centers.size.height * _position.y);
-    CGFloat face = _handle ? outer - 52 : outer;
-    _face.bounds = CGRectMake(0, 0, face, _handle ? MAX(32, face * 0.58) : face);
+    CGFloat face = _handle ? outer * 0.74 : outer;
+    _face.bounds = CGRectMake(0, 0, face, _handle ? face * 0.60 : face);
+    _face.layer.cornerRadius = MIN(16, face * 8 / 52);
     _face.center = CGPointMake(outer / 2, outer / 2);
     _label.frame = CGRectInset(_face.bounds, 4, 0);
-    _label.font = [UIFont systemFontOfSize:round(face * 0.27) weight:UIFontWeightSemibold];
+    _label.font = [UIFont systemFontOfSize:MAX(9, round(face * 0.27)) weight:UIFontWeightSemibold];
     _handle.frame = self.bounds;
-    _shield.frame = CGRectInset(self.bounds, -sp_joystick_touch_margin, -sp_joystick_touch_margin);
 }
 - (BOOL)containsKeyPoint:(CGPoint)point {
-    if (!_handle) return CGRectContainsPoint(self.bounds, point);
-    CGFloat r = self.bounds.size.width / 2;
-    return hypot(point.x - r, point.y - r) <= r;
+    if (_handle) return [[UIBezierPath bezierPathWithOvalInRect:self.bounds] containsPoint:point];
+    return [[UIBezierPath bezierPathWithRoundedRect:_face.frame cornerRadius:_face.layer.cornerRadius] containsPoint:point];
 }
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!_handle) return [super pointInside:point withEvent:event];
-    if ([self containsKeyPoint:point]) return YES;
-    if (event && event.type != UIEventTypeTouches) return NO;
-    for (UITouch *touch in event.allTouches) {
-        CGPoint p = [touch locationInView:self];
-        if (touch.phase == UITouchPhaseBegan && hypot(p.x - point.x, p.y - point.y) < 0.5 &&
-            touch.type != UITouchTypeDirect) return NO;
-    }
-    CGFloat r = self.bounds.size.width / 2;
-    return hypot(point.x - r, point.y - r) <= r + sp_joystick_touch_margin;
+    return [self containsKeyPoint:point];
 }
 - (void)syncWithEvent:(UIEvent *)event {
     if (self.hidden) return;
