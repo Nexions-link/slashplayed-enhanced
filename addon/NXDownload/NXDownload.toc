@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: Nexions Download Manager
+## Notes: Read-only client streaming diagnostics.
+## Author: Nexions
+## Version: 0.1.0
+## SavedVariables: NXDownloadDB
+NXDownload.lua
