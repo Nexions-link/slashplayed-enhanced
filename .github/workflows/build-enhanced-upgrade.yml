@@ -1,7 +1,7 @@
 # Enhanced native controls on the modern official Windows-ready game loader.
 # Unsigned candidate: NO guarantee SideStore can replace Windows Companion's signed app.
 # NOTE: IPA structural success does not imply on-device JIT or extended-memory entitlement works.
-name: Build Nexions Enhanced 1.7.0 (alpha 2, official v1.7.0)
+name: Build Nexions Enhanced 1.7.0 (alpha 3, updater preflight)
 # SwiftUI ViewBuilder hotfix: control settings now render multiple grouped sections.
 
 on:
@@ -13,7 +13,7 @@ on:
         type: string
         default: 'slashplayed'
   push:
-    branches: ['feature/nexions-1.7.0-diagnostics']
+    branches: ['feature/nexions-ondevice-updater']
     paths:
       - .github/workflows/build-enhanced-upgrade.yml
 
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nexions-170-diagnostics
+  group: nexions-170-updater-alpha3
   cancel-in-progress: false
 
 jobs:
@@ -60,6 +60,7 @@ jobs:
           git remote add official https://github.com/paulstraw/slashplayed.git
           git fetch --no-tags official 0e68bb83766c0a47aae4980fdab78e09ddcc91f1
           git show "$ENHANCED_SHA:apps/client/spsettings.swift" > "$RUNNER_TEMP/spsettings-enhanced.swift"
+          git show "$ENHANCED_SHA:research/nexions-updater/NexionsUpdater.swift" > "$RUNNER_TEMP/NexionsUpdater.swift"
           git reset --hard 0e68bb83766c0a47aae4980fdab78e09ddcc91f1
           test "$(git rev-parse HEAD)" = 0e68bb83766c0a47aae4980fdab78e09ddcc91f1
           # Restore only the native touch input modules and WoW touch action bars.
@@ -84,7 +85,7 @@ jobs:
               s=p.read_text()
               assert s.count(before)==1, f"unexpected upstream source in {path}: {before[:100]}"
               p.write_text(s.replace(before,after))
-          # Nexions alpha 2: record network-path and app-lifecycle events in the existing local console log.
+          # Nexions alpha 3: record network-path and app-lifecycle events in the existing local console log.
           # No addresses, SSIDs, credentials, game packets or remote telemetry are collected.
           replace_once("apps/client/launcher.m", "#import <UIKit/UIKit.h>",
                        "#import <UIKit/UIKit.h>\n#import <Network/Network.h>")
@@ -120,7 +121,7 @@ jobs:
                                NSProcessInfo.processInfo.systemUptime]);
                       }];
                   }
-                  say(@"nexions: 1.7.0 alpha 2 diagnostics enabled; path status is not proof of CDN reachability");
+                  say(@"nexions: 1.7.0 alpha 3 diagnostics enabled; path status is not proof of CDN reachability");
               });
           }
           """)
@@ -128,7 +129,7 @@ jobs:
                        "    nexions_network_diagnostics();\n    delete_listed();\n    write_free_space();")
           assert 'MARKETING_VERSION: "1.7.0"' in Path('apps/companion/project.yml').read_text()
           replace_once("apps/client/Info.plist", '<key>CFBundleVersion</key><string>1</string>',
-                       '<key>CFBundleVersion</key><string>1702</string>')
+                       '<key>CFBundleVersion</key><string>1703</string>')
           # Extend launcher CDN diagnostics: only status/byte counts and timings, not URLs.
           # This covers the launcher downloads; the guest game's TACT transfers are separate.
           replace_once("apps/client/spcdn.m", "    config.waitsForConnectivity = NO;\n    NSURLSession *session",
@@ -238,6 +239,29 @@ jobs:
           ''' + key)
           p.write_text(s)
           PY
+          # Add the read-only updater view to the original Settings navigation.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path("apps/client/spsettings.swift")
+          s = p.read_text()
+          def once(before, after):
+              global s
+              assert s.count(before) == 1, before
+              s = s.replace(before, after)
+          once("enum Page: Hashable { case joystick,", "enum Page: Hashable { case nexionsUpdater, joystick,")
+          once("                    signing\n", '                    signing\n                    Section("Nexions") {\n                        NavigationLink("Nexions Updater", value: Page.nexionsUpdater)\n                    }\n')
+          once("                case .joystick:", "                case .nexionsUpdater: NexionsUpdaterView(appleToken: settings.now.appleToken, signedUntil: settings.now.signedUntil)\n                case .joystick:")
+          # Remove redundant Done toolbars on our three pages; retain the upstream root Done action.
+          for title in ("Joystick", "Right-click Button", "Keyboard Buttons"):
+              before = '.navigationTitle("' + title + '").toolbar { DoneButton(settings: settings) }'
+              once(before, '.navigationTitle("' + title + '")')
+          s += "\n" + (Path(os.environ["RUNNER_TEMP"]) / "NexionsUpdater.swift").read_text()
+          p.write_text(s)
+          PY
+          grep -q 'NexionsUpdaterView(appleToken:' apps/client/spsettings.swift
+          grep -q 'SecKeyCreateRandomKey' apps/client/spsettings.swift
+          grep -q 'SHA-256 mismatch' apps/client/spsettings.swift
           grep -q 'Nexions Performance Monitor' apps/client/spsettings.swift
           grep -q 'five.numberOfTouchesRequired = 5' shims/appkit/spevent.m
           grep -q 'sp_nexions_frames' shims/appkit/sploading.m
@@ -292,7 +316,7 @@ jobs:
               data["CFBundleIdentifier"] = ident
               if p.name == "Info.plist" and p.parent == app:
                   data["CFBundleShortVersionString"] = "1.7.0"
-                  data["CFBundleVersion"] = "1702"
+                  data["CFBundleVersion"] = "1703"
               with p.open("wb") as f: plistlib.dump(data, f)
           for p in (app/"slashplayed", helper/"SPJitHelper", app/"addons/SPTouchBars/SPTouchBars.lua"):
               assert p.is_file(), f"missing runtime/control component: {p}"
@@ -329,7 +353,7 @@ jobs:
               main = plistlib.loads(z.read(app+"Info.plist"))
               helper = plistlib.loads(z.read(app+"PlugIns/SPJitHelper.appex/Info.plist"))
               assert main["CFBundleShortVersionString"] == "1.7.0"
-              assert main["CFBundleVersion"] == "1702"
+              assert main["CFBundleVersion"] == "1703"
               assert main["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert helper["CFBundleIdentifier"] == "@BUNDLE_ID@"
               assert app+"addons/SPTouchBars/SPTouchBars.lua" in z.namelist()
@@ -338,7 +362,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: slashplayed-nexions-170-alpha2
+          name: slashplayed-nexions-170-alpha3
           path: |
             dist/Slashplayed-Full-Enhanced-UPGRADE-CANDIDATE.ipa
             dist/slashplayed-device-kit.zip
